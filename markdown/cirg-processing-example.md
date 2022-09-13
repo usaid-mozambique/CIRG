@@ -1,0 +1,333 @@
+Processing Custom Indicator Reporting Submissions
+================
+Karishma Srikanth
+9/12/2022
+
+## Introduction
+
+The `Interesting` package was set up to ingest, process, and manage
+Custom Indicator Reporting data submitted by OUs. While this package’s
+primary purpose is to batch process submissions every quarter at the
+headquarters level, country teams will also be able to use this package
+to process submissions on their own.
+
+### Project Workflow
+
+To set up your workflow, you’ll fist want to ensure that you are working
+in a RProject. Using RStudio projects helps to ensure that your workflow
+and working directories are consistent early on, eliminating some of the
+issues that occur when trying to import and export files into R. When
+you set up a project, your working directory becomes the folder in which
+that project lives.
+
+In my case, I am going to clone the `Interesting` package on Github and
+use that as a the working directory (see: Github training). Feel free to
+set up your project working directory wherever makes the most sense for
+you (i.e. `usaid-mozambique/CIRG` folder, etc.). The important thing is
+that your project and directory are consistent throughout, as the CIR
+processing package will create folders within this project for
+processing.
+
+#### Step 1: Installing Packages and loading libraries
+
+To get started, let’s install and load the current package from the
+Github repo’s `develop` branch - please note that this R package is
+still in development and will likely change slightly in the coming
+months.
+
+``` r
+remotes::install_github("USAID-OHA-SI/Interesting", ref="develop")
+```
+
+Now that we have installed our packages, let’s load them into our
+workspace. For this script, we will also be using the `tidyverse`, the
+OHA package `glamr`, and `googledrive` & `googlesheets4` for the
+connection to Google Drive.
+
+``` r
+library(tidyverse)
+library(glamr)
+library(Interesting)
+library(googledrive)
+library(googlesheets4)
+```
+
+#### Step 2: Set up folders & directories
+
+Now that our packages are loaded, we can get started with setting up our
+folder structure. The `cir_setup()` function in the `Interesting`
+package sets up your processing folders for you - all you have to do is
+store the name of the folder `cirg-submissions` and the dates for
+processing. The default is set to pull the current date using
+`glamr::curr_date()`. After that, we call `cir_setup` to set up the
+submission folder, as well as the sub-folder named by the processing
+dates.
+
+``` r
+    # Processing folder
+  proc_folder <<- "cirg-submissions"
+
+  # Processing Date (today's date or you can specify the date)
+  proc_date <<- glamr::curr_date()
+
+  #cir_setup(folder = proc_folder, dt = proc_date)
+  cir_setup(folder = proc_folder, dt = proc_date)
+```
+
+Let’s take a look at what’s inside these folders. In the
+`cirg-submissions` folder, you’ll see a sub-folder by date. This is a
+great way to keep different processing flows separate. For instance, if
+you process custom indicator submission on January 1, 2022 and March 1,
+2022, there will be two separate folders in the `cirg-submissions`
+folder called `CIRG-2022-01-01` and `CIRG-2022-03-01`.
+
+``` r
+list.files("cirg-submissions")
+```
+
+    ## [1] "CIRG-2022-09-12"
+
+Now, let’s inspect the sub-folder a little further:
+
+``` r
+list.files("cirg-submissions/CIRG-2022-09-12")
+```
+
+    ## [1] "0-reference"   "1-raw"         "2-metadata"    "3-validations"
+    ## [5] "4-processed"   "5-transformed" "6-cleaned"     "7-final"      
+    ## [9] "8-archive"
+
+You’ll notice 9 sub-folders within our working folder. These are going
+to be the foundational folders for our processing scripts. For example,
+raw submissions will be saved in the `1-raw` folder - from there, any
+metadata processing, validated data frames, & processed and transformed
+data will be exported to the corresponding folder.
+
+#### Step 3: Pull CIR submissions from Drive
+
+This package has a function in development called `pull_submissions()`.
+For now, let’s load the function locally so we can run it on our own,
+since it is still being added to the package.
+
+`pull_submissions()` routes to the folder for all Custom Indicator
+Reporting submissions. To use this function, you need to specify the
+period of interest using the parameter `curr_pd` - please note that the
+format of this will likely be `curr_pd == FY22 Q3`, with a space between
+the fiscal year and quarter.
+
+you may specify the OU if you are pulling OU-specific data. In our case,
+we only want the Mozambique submission, so we’ll set the option to
+`ou_sel == "Mozambique`.
+
+Here is the function if you are interested in taking a look.
+
+``` r
+pull_submissions <- function(curr_pd, ou_sel) {
+  
+  #Store ID
+  cir_subm_sheet <- "1amabNYu1HF9rZ1Y-Hy5p8lQ73Ynll744HZxPyZuVEgI"
+  cir_subm_id <- as_id(cir_subm_sheet)
+  
+  #Read from Google drive
+  df_cir_subm <- googlesheets4::read_sheet(cir_subm_id)
+  
+  #clean up sheet to grab file names
+  df_cir_subm <- df_cir_subm %>%
+    janitor::clean_names() %>%
+    select(subm_time = timestamp,
+           subm_poc = email_address,
+           subm_ou = operating_unit_country,
+           subm_period = custom_indicator_fy_and_period,
+           subm_type = what_type_of_submission_is_this,
+           subm_tmp_type = which_template_s_are_you_submitting,
+           subm_tech_areas = what_technical_area_s_are_you_submitting_data_for,
+           subm_files = upload_your_custom_indicator_template_file_s_here_excel_sheets_only_no_google_sheets,
+           subm_processed = processed_by_cirg) %>%
+    rowwise() %>%
+    mutate(subm_count = length(unlist(str_split(subm_files, ", "))),
+           subm_id = as.numeric(lubridate::as_datetime(subm_time, tz = "EST"))) %>%
+    ungroup() %>%
+    relocate(subm_id, .before = 1) %>%
+    relocate(subm_processed, .after = last_col())
+  
+  #if country is specified, filter to that country
+  if (!is.null(ou_sel)) {
+    df_cir_subm <- df_cir_subm %>% 
+      filter(subm_ou %in% ou_sel)
+  }
+  
+#filter to current pd and prepare to pull down based on file names
+  df_cir_files <- df_cir_subm %>%
+    filter(subm_period == curr_pd) %>%
+    select(subm_id, subm_file = subm_files) %>%
+    separate_rows(subm_file, sep = ",\\s") %>%
+    mutate(subm_file_id = str_extract(subm_file, "(?<=\\?id\\=).*"),
+           subm_filename = pull(drive_get(as_id(subm_file_id)), name),
+           subm_file_valid = str_detect(subm_filename, ".xlsx$")) %>%
+    relocate(subm_file_id, .after = subm_id)
+  
+#set this to save to "raw" data folder  
+  dir_raw <<- cir_folder(type = "raw", dt = proc_date)
+  
+#pull files from Drive and save to raw data folder  
+  df_cir_files %>%
+    filter(subm_file_valid = TRUE) %>%
+    select(subm_file_id, subm_filename) %>%
+    #filter(row_number() == 1) %>%
+    #pull(subm_file_id) %>% first() %>%
+    pwalk(~drive_download(file = as_id(.x),
+                          path = file.path(dir_raw, .y),
+                          overwrite = T))
+
+  
+}
+```
+
+Now, let’s put this in action.
+
+``` r
+pull_submissions(curr_pd = "FY22 Q3", ou_sel = "Mozambique")
+```
+
+To check what this did, let’s look in the raw data folder. You’ll see
+now that all the CIR submissions for Mozambique in FY22Q3 have been
+stored in the folder. These will now be called on during processing.
+
+``` r
+# LOCAL FILES
+
+#subm <- fs::dir_ls("~/Downloads", regexp = "CIRG_.*.xlsx$")
+subm <<- fs::dir_ls(dir_raw, regexp = "CIRG_.*.xlsx$")
+
+subm
+```
+
+    ## ./cirg-submissions/CIRG-2022-09-12/1-raw/CIRG_FY22_Q3_MOZAMBIQUE_DREAMS_20220812 - Stelio Maposse.xlsx
+    ## ./cirg-submissions/CIRG-2022-09-12/1-raw/CIRG_FY22_Q3_Mozambique_GHSC-PSM_20220812 - Cicero Nhantumbo.xlsx
+    ## ./cirg-submissions/CIRG-2022-09-12/1-raw/CIRG_FY22_Q3_MOZAMBIQUE_KP_20220812 - Stelio Maposse.xlsx
+    ## ./cirg-submissions/CIRG-2022-09-12/1-raw/CIRG_FY22_Q3_MOZAMBIQUE_VMMC_20220812 - Stelio Maposse.xlsx
+
+#### Step 4: Run initial validation
+
+Let’s run the initial validation on the first submitted, using the
+`validate_initial()` function from the `Interesting` package.
+
+  - This check identifies the following validations of the metadata:
+      - Does the file have a meta tab?
+      - Does the file have a valid meta tab?
+      - Does the file have sheets with “CIRG” in the name for
+        processing?
+      - How many sheets does the file have?
+      - List of valid sheet names
+      - List of sheets to exclude
+      - Is the submission valid?
+
+<!-- end list -->
+
+``` r
+# Initial Validation
+meta <- subm %>%
+  dplyr::first() %>%
+  validate_initial()
+
+
+str(meta)
+```
+
+    ## tibble [1 x 12] (S3: tbl_df/tbl/data.frame)
+    ##  $ filename       : chr "CIRG_FY22_Q3_MOZAMBIQUE_DREAMS_20220812 - Stelio Maposse.xlsx"
+    ##  $ ou             : chr "Mozambique"
+    ##  $ period         : chr "FY22 Q1"
+    ##  $ version        : chr "2.01"
+    ##  $ type           : chr "Wide"
+    ##  $ has_meta       : logi TRUE
+    ##  $ has_valid_meta : logi TRUE
+    ##  $ has_cirg_sheets: logi TRUE
+    ##  $ sheets_count   : int 6
+    ##  $ sheets_valid   : chr "DREAMS_FP_DENOMINATOR_CIRG, DREAMS_FP_NUMERATOR_CIRG, DREAMS_GEND_NORM_COMMUNITY_CIRG, DREAMS_GEND_NORM_SMALLGR"| __truncated__
+    ##  $ sheets_exclude : chr ""
+    ##  $ subm_valid     : logi TRUE
+
+We can go ahead and run this initial validation on all of the file
+submissions using `map_dfr()`. Here, you’ll notice some checks that have
+been flagged for some files. For example, some of the files have been
+flagged as “not having a valid meta tab” - this is often due to fields
+that have not been filled out on the meta tab, such as reporting period
+and OU at the top of the tab.
+
+Please ensure that these fields are correctly filled out to avoid issues
+that may result in the data not being immediately processed by the
+package.
+
+``` r
+metas <- subm %>%
+  map_dfr(validate_initial)
+
+head(metas)
+```
+
+    ## # A tibble: 4 x 12
+    ##   filename    ou    period version type  has_m~1 has_v~2 has_c~3 sheet~4 sheet~5
+    ##   <chr>       <chr> <chr>  <chr>   <chr> <lgl>   <lgl>   <lgl>     <int> <chr>  
+    ## 1 CIRG_FY22_~ Moza~ FY22 ~ 2.01    Wide  TRUE    TRUE    TRUE          6 DREAMS~
+    ## 2 CIRG_FY22_~ Moza~ FY22 ~ 2.01    Wide  TRUE    TRUE    TRUE          4 SC_ARV~
+    ## 3 CIRG_FY22_~ <NA>  <NA>   2.01    Wide  TRUE    FALSE   TRUE          6 TX_NEW~
+    ## 4 CIRG_FY22_~ <NA>  <NA>   2.01    Wide  TRUE    FALSE   TRUE          2 VMMC_A~
+    ## # ... with 2 more variables: sheets_exclude <chr>, subm_valid <lgl>, and
+    ## #   abbreviated variable names 1: has_meta, 2: has_valid_meta,
+    ## #   3: has_cirg_sheets, 4: sheets_count, 5: sheets_valid
+
+We can then import our file using `cir_import()`. Let’s select the first
+import and run the second round of validations on the file.
+
+  - These validations will check:
+      - Is the template confirmed?
+      - Are there columns missing? Extra columns? Which columns to be
+        restricted
+      - Does the file have data?
+      - Does the file have multiple OUs? List OUs
+
+We then save the checks and data in a list called `df_subm`. Once we run
+this over all the files, we are ready to round out the transformations
+using `cir_processing()`. This function imports, performs validations,
+and transforms the data into a machine readable data set that can be
+used for analytics. Once `cir_processing()` is run, the function will
+save the processed datasets into each respective folder for validations,
+processed, and transformed dataframes.
+
+Please note that the package is still in development for the cleaning
+stage and final validations.
+
+``` r
+#Import & 2nd round of Validation
+  df_subm <- subm %>%
+    dplyr::first() %>%
+    cir_import(template = meta$type)
+
+#saved import checks & data in a list
+  df_subm$checks
+  df_subm$data
+
+  # Import all - for purpose of checks 
+  df_imp_checks <- metas %>%
+    filter(subm_valid == TRUE) %>%
+    select(filename, type) %>%
+    pmap_dfr(function(filename, type) {
+      subm <- cir_import(filepath = file.path(dir_raw, filename), template = type)
+      return(subm$checks)
+    })
+
+  
+  df_imp_data <- metas %>%
+    filter(subm_valid == TRUE) %>%
+    select(filename, type) %>%
+    pmap_dfr(function(filename, type) {
+      subm <- cir_import(filepath = file.path(dir_raw, filename), template = type)
+      return(subm$data)
+    })
+
+  # Import, Validations & Transformations
+  df_subm <- subm %>%
+    dplyr::first() %>%
+    cir_processing()
+```
