@@ -16,14 +16,17 @@ library(googlesheets4)
 
 # GLOBAL VARIABLES --------------------------------------------------------------
   
-  #script reference number
+  # Script reference number
   ref_id <- "bd5d59eb"
   
   # Processing folder, to run each quarter
   proc_folder <<- "cirg-submissions"
   
   # Processing Date (today's date or you can specify the date), to run each quarter
-  proc_date <<- "2022-09-13"
+  proc_date <<- "2022-03-20"
+  
+  # Output file path
+  path_historic_output_file <- "Dataout/cirg.txt"
   
 
 # SET UP ------------------------------------------------------------------------
@@ -51,7 +54,7 @@ metas <- subm %>%
 
 # Import, Validations & Transformations
 # cir_processing() will import, validation, and transform the data and save the files to the appropriate folders
-df_subm <- subm %>%
+df_subm <- subm[1] %>%
   map_dfr(cir_processing)
   
 # CLEAN UP AND APPEND FILES TOGETHER --------------------------------------------
@@ -66,6 +69,11 @@ df_cirg_transformed <- subm_processed %>%
   filter(indicator != "ROW_ID")
 
 #Now, you can read data out to a csv or xlsx file if needed
+# write to local
+write_tsv(
+  df_cirg_transformed,
+  na = "",
+  path_historic_output_file)
 
 
   
