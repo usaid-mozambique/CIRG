@@ -54,7 +54,7 @@ metas <- subm %>%
 
 # Import, Validations & Transformations
 # cir_processing() will import, validation, and transform the data and save the files to the appropriate folders
-df_subm <- subm[1] %>%
+df_subm <- subm[7] %>%
   map_dfr(cir_processing)
   
 # CLEAN UP AND APPEND FILES TOGETHER --------------------------------------------
@@ -70,10 +70,10 @@ df_cirg_transformed <- subm_processed %>%
 
 #Now, you can read data out to a csv or xlsx file if needed
 # write to local
-write_tsv(
-  df_cirg_transformed,
-  na = "",
-  path_historic_output_file)
+# write_tsv(
+#   df_cirg_transformed,
+#   na = "",
+#   path_historic_output_file)
 
 
   
